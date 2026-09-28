@@ -1,0 +1,51 @@
+name: Publish
+# After a merge to main: sign the bundle with the coordinator key, check it with YaCy's own parser, publish it on
+# GitHub Pages (https://pad01g.github.io/yacy-trust/bundle.json).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: node --no-warnings --test scripts/trust.test.ts
+      - name: Sign the bundle
+        env:
+          COORDINATOR_KEY: ${{ secrets.COORDINATOR_KEY }}
+        run: node --no-warnings scripts/trust.ts build site
+      - name: YaCy accepts the bundle
+        run: |
+          docker run --rm -v "$PWD/site:/site:ro" --entrypoint sh ghcr.io/pad01g/yacy-improved-search:latest -c \
+            "java -cp '/opt/yacy_search_server/lib/*' net.yacy.peers.trust.TrustTool verify /site/bundle.json freeworld $(jq -r .pk coordinator.json)" | tee verify.txt
+          grep -q "statements accepted" verify.txt
+      - name: Agent-readable files
+        run: cp llms.txt site/llms.txt && touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

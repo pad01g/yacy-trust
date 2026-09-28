@@ -1,0 +1,17 @@
+# yacy-trust
+
+> Trust registry for peers of the YaCy improved-search fork (a peer-to-peer web search engine). It publishes a bundle signed by the coordinator key tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc. A YaCy peer that trusts this coordinator only shows results whose author (the crawling peer) is on this registry. A merged pull request is the approval.
+
+Use it on a peer: set `trust.coordinators=tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc` and `trust.bundle.urls=https://pad01g.github.io/yacy-trust/bundle.json`.
+
+Join: open a pull request on https://github.com/pad01g/yacy-trust adding `peers/<name>.json` (a trusted peer: `pk`, `contact`, `description`, optional `tags`, `priority`, `url`) or `operators/<name>.json` (an operator who then signs its own list in `lists/<name>.json`). Pull requests may only touch peers/, operators/, lists/, revoked/ and coordinators/. Nobody can be made a coordinator: each user chooses coordinators; run your own registry by forking this one.
+
+## Files
+
+- [bundle.json](https://pad01g.github.io/yacy-trust/bundle.json): the signed envelopes (delegations and peer lists) that peers fetch
+- [registry.json](https://pad01g.github.io/yacy-trust/registry.json): the same content, unsigned and readable
+- [README](https://github.com/pad01g/yacy-trust#readme): roles, commands to create keys and sign lists, revocation
+
+## Related
+
+- [YaCy improved-search](https://pad01g.github.io/yacy_search_server/llms.txt): the search engine, its MCP server and agent skill
