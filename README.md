@@ -105,10 +105,15 @@ own list; it does not remove the peer from operators' lists.
 
 YaCy improved-search フォーク（[説明](https://pad01g.github.io/yacy_search_server/ja/)）のピア向けの、
 コーディネータ `tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc` の信頼の登録簿。**pull request がマージされたことが承認になる。**
-マージのたびに CI がコーディネータの鍵で束に署名し、https://pad01g.github.io/yacy-trust/bundle.json に公開する。
+マージのたびに CI がコーディネータの鍵で束に署名して公開する（束の版は毎回前より大きい）:
+
+- ピア向けの束: https://pad01g.github.io/yacy-trust/bundle.json
+- 人向けの一覧: https://pad01g.github.io/yacy-trust/
+- エージェント向け: https://pad01g.github.io/yacy-trust/llms.txt
 
 **このコーディネータを信頼する:** ピアに `trust.coordinators=tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc` と
-`trust.bundle.urls=https://pad01g.github.io/yacy-trust/bundle.json` を設定する。
+`trust.bundle.urls=https://pad01g.github.io/yacy-trust/bundle.json` を設定する。ピアはこの登録簿が
+（直接、または委任したオペレータを通して）載せた作者の結果だけを出す。束は起動時と 10 分ごとに取りに行き、新しい版を他のピアにも渡す。
 
 | 役割 | 意味 | なり方 |
 |---|---|---|
@@ -116,7 +121,8 @@ YaCy improved-search フォーク（[説明](https://pad01g.github.io/yacy_searc
 | オペレータ | コーディネータから委任を受け、自分で信頼するピアの一覧（優先度・タグ付き）に署名する | `operators/<name>.json` を足す PR。マージ後に `lists/<name>.json` の PR（または自分で配る） |
 | コーディネータ | 信頼の根。各利用者が自分で選ぶ（`trust.coordinators`）ので、誰かに「してもらう」ものではない | このリポジトリを fork して自分の鍵で登録簿を運営する。ここの目録に載るなら `coordinators/<name>.json` の PR |
 
-どの登録も `contact`（例 `github:<user>`）と `description` が必須で、`pk` の秘密鍵を自分で持っていること。
+どの登録も `contact`（例 `github:<user>`）と `description` が必須で、ほかの欄は書けない。`pk` の秘密鍵を自分で持っていること。
+鍵は YaCy が表示する 43 文字の base64url の形で書く。運営者は保証してよいと思えるものをマージする。
 タグは結果の性質の宣言（`ads`、`proxy:<engine>`、`curated`、`unfiltered`、`adult`、独自の `x-<name>:...`）。
 手順（鍵の作り方、一覧の署名、失効）は上の英語の節のコマンドをそのまま使える。
 
@@ -125,10 +131,13 @@ YaCy improved-search フォーク（[説明](https://pad01g.github.io/yacy_searc
 オペレータのファイルを消す PR は通らない（ピアは新しい版で失効されるまで委任を持ち続けるので、抜けるときは必ず
 `revoked/` に移す）。`revoked/` の記録は消せない（CI が `main` の git の履歴と公開中の束の両方と照らし合わせる）。
 オペレータの一覧は、公開中より大きい `version` でしか差し替えられない。束に入る文は 256 個まで（ピアが他の
-コーディネータの分も持てるように）で、失効もこれに数える。
+コーディネータの分も持てるように）で、失効もこれに数える。登録簿の一生で数百のオペレータまでが目安。
+`peers/<name>.json` を消すと、次の版のコーディネータ自身の一覧からは外れるが、オペレータの一覧からは外れない。
 
 運営者向け: 鍵は environment `coordinator`（`main` だけが使える）の secret と手元の控えにだけある。Guard は
 他人の PR に登録簿の 5 つのディレクトリの小さな通常ファイルだけ、1 PR 200 ファイルまでを許し、例外はない
 （`scripts/` や `.github/` の変更は管理者のバイパスでマージする。マージ後に鍵と一緒に動くことを忘れずに）。
 `main` の保護は GitHub Actions の `guard` と `validate` を最新のブランチで求める。公開中の束が見つからないときは
-エラーにする（最初の公開だけ `TRUST_BOOTSTRAP=1`）。
+エラーにする（最初の公開だけ `TRUST_BOOTSTRAP=1`）。Publish は `main` の先頭でしか動かず（古い実行のやり直しで
+古い状態を公開しないため）、版を max(現在時刻, 公開中の版 + 1) にし、YaCy が全ての文を受け付けなければ失敗する。
+手元での確認: `node --test scripts/trust.test.ts && node scripts/trust.ts validate`。
