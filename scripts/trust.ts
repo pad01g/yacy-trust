@@ -10,6 +10,7 @@
 // Versions only grow: max(now, version of the published bundle + 1). The published bundle is also the memory of the
 // registry: an operator it delegates to may only leave operators/ by moving to revoked/, and revoked/ only grows.
 import { createPrivateKey, createPublicKey, sign, verify, type KeyObject } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -27,6 +28,8 @@ export const MAX_BUNDLE_BYTES = 3584 * 1024;
 /** operator lists may not claim versions far in the future: a version near 2^40 would block every later update */
 const MAX_FUTURE_SECONDS = 86400;
 const NETWORKS = new Set(["*", "freeworld"]);
+/** YaCy keeps at most 512 envelopes (TrustStore.MAX_ENVELOPES), shared by all coordinators a peer trusts: keep room */
+export const MAX_BUNDLE_ENVELOPES = 256;
 
 export type Peer = { pk: string; priority: number; tags: string[]; contact: string; description: string; url?: string };
 export type Operator = { pk: string; contact: string; description: string; reason?: string };
@@ -259,14 +262,19 @@ export function buildBundle(reg: Registry, key: KeyObject, version: number): { e
 }
 
 // ---- the published bundle: version counter and memory of past delegations
-export type Published = { version: number; delegated: Set<string>; revoked: Set<string> };
+export type Published = { version: number; delegated: Set<string>; revoked: Set<string>; lists: Map<string, { version: number; payload: string }> };
 
 /** what the coordinator itself signed in a published bundle (operator lists do not count) */
 export function readPublished(bundle: { envelopes?: Envelope[] }, coordinator: string): Published {
-  const pub: Published = { version: 0, delegated: new Set(), revoked: new Set() };
+  const pub: Published = { version: 0, delegated: new Set(), revoked: new Set(), lists: new Map() };
   for (const e of bundle.envelopes ?? []) {
-    if (e.signer !== coordinator || !verifyEnvelope(e)) continue;
+    if (!verifyEnvelope(e)) continue;
     const p = JSON.parse(Buffer.from(e.payload, "base64url").toString("utf8")) as { type: string; version: number; operator?: string; revoked?: boolean };
+    if (e.signer !== coordinator) {
+      // an operator's list: later pull requests may only replace it by a newer version
+      if (p.type === "yacy-peerlist-v1") pub.lists.set(e.signer, { version: p.version, payload: e.payload });
+      continue;
+    }
     pub.version = Math.max(pub.version, p.version);
     if (p.type === "yacy-delegation-v1" && p.operator) (p.revoked ? pub.revoked : pub.delegated).add(p.operator);
   }
@@ -282,8 +290,11 @@ export async function fetchPublished(url: string, coordinator: string): Promise<
     const f = process.env.TRUST_PUBLISHED_FILE;
     return existsSync(f) ? readPublished(JSON.parse(readFileSync(f, "utf8")), coordinator) : null;
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(20000), headers: { "cache-control": "no-cache" } });
-  if (res.status === 404) return null;
+  // a unique query string gets past the CDN cache of GitHub Pages (max-age 600)
+  const res = await fetch(`${url}?t=${Date.now()}`, { signal: AbortSignal.timeout(20000), headers: { "cache-control": "no-cache" } });
+  // a missing bundle is only normal before the first publication (TRUST_BOOTSTRAP=1): otherwise Pages is broken or
+  // moved, and continuing would forget the published versions and delegations
+  if (res.status === 404 && process.env.TRUST_BOOTSTRAP === "1") return null;
   if (!res.ok) throw new Error(`cannot read the published bundle ${url}: HTTP ${res.status}`);
   return readPublished((await res.json()) as { envelopes: Envelope[] }, coordinator);
 }
@@ -295,6 +306,57 @@ export function checkHistory(reg: Registry, pub: Published, problems: Problems):
     if (!has(reg.operators, pk) && !has(reg.revoked, pk))
       problems.add("operators/", `the published bundle delegates to ${pk}; move its file to revoked/ instead of deleting it (peers keep delegations until they are revoked)`);
   for (const pk of pub.revoked) if (!has(reg.revoked, pk)) problems.add("revoked/", `the published bundle revokes ${pk}; revoked/ entries must stay`);
+  // an operator list may not go back to an older version (new peers would adopt it) or change at the same version
+  for (const [name, e] of reg.lists) {
+    const known = pub.lists.get(e.signer);
+    if (!known) continue;
+    const p = JSON.parse(Buffer.from(e.payload, "base64url").toString("utf8")) as { version: number };
+    if (p.version < known.version) problems.add(`lists/${name}.json`, `version ${p.version} is older than the published version ${known.version}`);
+    else if (p.version === known.version && e.payload !== known.payload) problems.add(`lists/${name}.json`, `changes the published list without raising its version ${known.version}`);
+  }
+}
+
+/**
+ * The memory of the registry in git: every operator key that was ever in operators/ must now be in operators/ or
+ * revoked/, and every key that was ever in revoked/ must still be there. This holds even if the published bundle
+ * cannot be read. Empty outside a git checkout (tests).
+ */
+export function gitHistory(): { everDelegated: Set<string>; everRevoked: Set<string> } | null {
+  const git = (...args: string[]) => execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    if (git("rev-parse", "--is-inside-work-tree").trim() !== "true") return null;
+  } catch {
+    return null;
+  }
+  const everDelegated = new Set<string>();
+  const everRevoked = new Set<string>();
+  for (const rev of git("rev-list", "HEAD", "--", "operators", "revoked").split("\n").filter(Boolean)) {
+    for (const line of git("ls-tree", "-r", "--name-only", rev, "--", "operators", "revoked").split("\n").filter((l) => l.endsWith(".json"))) {
+      try {
+        const pk = (JSON.parse(git("show", `${rev}:${line}`)) as { pk?: unknown }).pk;
+        if (isPublicKey(pk)) (line.startsWith("revoked/") ? everRevoked : everDelegated).add(pk);
+      } catch {
+        // a broken file in history: it was refused then
+      }
+    }
+  }
+  return { everDelegated, everRevoked };
+}
+
+export function checkGitHistory(reg: Registry, h: { everDelegated: Set<string>; everRevoked: Set<string> }, problems: Problems): void {
+  const has = (m: Map<string, Operator>, pk: string) => [...m.values()].some((o) => o.pk === pk);
+  for (const pk of h.everDelegated)
+    if (!has(reg.operators, pk) && !has(reg.revoked, pk)) problems.add("operators/", `${pk} was an operator; move its file to revoked/ instead of deleting it`);
+  for (const pk of h.everRevoked) if (!has(reg.revoked, pk)) problems.add("revoked/", `${pk} was revoked; revoked/ entries must stay`);
+}
+
+/** what a peer will receive must fit its limits; checked before a merge, not only when publishing */
+export function checkCapacity(reg: Registry, problems: Problems): void {
+  const envelopes = 1 + reg.operators.size + reg.revoked.size + reg.lists.size;
+  if (envelopes > MAX_BUNDLE_ENVELOPES) problems.add("registry", `the bundle would hold ${envelopes} envelopes; at most ${MAX_BUNDLE_ENVELOPES} (peers keep at most 512 of all coordinators together)`);
+  let bytes = 2048 + 1024 * (reg.operators.size + reg.revoked.size) + 200 * reg.peers.size;
+  for (const e of reg.lists.values()) bytes += e.payload.length + e.sig.length + e.signer.length + 64;
+  if (bytes > MAX_BUNDLE_BYTES) problems.add("registry", `the bundle would be about ${bytes} bytes; at most ${MAX_BUNDLE_BYTES} (peers refuse bundles above 4 MB)`);
 }
 
 /** strictly larger than the published version, and not in the future */
@@ -318,6 +380,9 @@ async function main(): Promise<void> {
     published = await fetchPublished(bundleUrl, reg.coordinator);
     if (published) checkHistory(reg, published, problems);
   }
+  const history = gitHistory();
+  if (history) checkGitHistory(reg, history, problems);
+  checkCapacity(reg, problems);
   if (problems.list.length) {
     console.error(problems.list.map((p) => `- ${p}`).join("\n"));
     console.error(`\n${problems.list.length} problem(s)`);

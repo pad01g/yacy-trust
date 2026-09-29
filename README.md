@@ -79,7 +79,9 @@ A pull request that moves `operators/<name>.json` to `revoked/<name>.json` (with
 `lists/<name>.json`. The next bundle contains a revoked delegation with a newer version, so peers that still hold
 the old list stop using it. **Deleting an operator file is refused**: peers keep a delegation until a newer version
 revokes it, so an operator can only leave by moving to `revoked/`, and `revoked/` entries stay forever (CI compares
-with the published bundle). Removing `peers/<name>.json` removes a peer from the next version of the coordinator's
+with the git history of `main` and with the published bundle). An operator list may only be replaced by a higher
+`version`. Revocations count toward the size limit of the bundle (at most 256 statements, which leaves peers room
+for other coordinators): the registry can hold a few hundred operators over its lifetime. Removing `peers/<name>.json` removes a peer from the next version of the coordinator's
 own list; it does not remove the peer from operators' lists.
 
 ## For the maintainer
@@ -88,10 +90,13 @@ own list; it does not remove the peer from operators' lists.
   branch may use, and in an offline backup. Anyone who can push to `main` (or change workflows there) can use the key:
   keep the list of people with write access short.
 - `Guard` (run from the base branch, so a pull request cannot change it) lets pull requests from others touch only
-  `peers/`, `operators/`, `lists/`, `revoked/` and `coordinators/` entries, as regular files of limited size. Your own
-  pull requests and changes to `scripts/` or `.github/` are not restricted: they run with the key after a merge.
+  `peers/`, `operators/`, `lists/`, `revoked/` and `coordinators/` entries, as regular files of limited size, at most
+  200 files per pull request. There is no exemption: change `scripts/` or `.github/` with the administrator bypass of
+  the branch protection, knowing that they run with the key after a merge.
+- The branch protection of `main` requires `guard` and `validate` from GitHub Actions on an up-to-date branch.
 - `Publish` refuses to run for anything but the current head of `main` (a re-run of an old run would publish old
-  state), sets the version to max(now, published version + 1), and fails unless YaCy accepts every statement.
+  state), sets the version to max(now, published version + 1), and fails unless YaCy accepts every statement. A
+  missing published bundle is an error; set `TRUST_BOOTSTRAP=1` only for the very first publication.
 - Test locally: `node --test scripts/trust.test.ts && node scripts/trust.ts validate`.
 
 ---
@@ -117,3 +122,13 @@ YaCy improved-search フォーク（[説明](https://pad01g.github.io/yacy_searc
 
 失効は `operators/<name>.json` を `revoked/<name>.json` に移し（`reason` を付ける）、`lists/<name>.json` を消す PR。
 次の束に新しい版の失効の委任書が入るので、古い一覧を持っているピアもそれを使わなくなる。
+オペレータのファイルを消す PR は通らない（ピアは新しい版で失効されるまで委任を持ち続けるので、抜けるときは必ず
+`revoked/` に移す）。`revoked/` の記録は消せない（CI が `main` の git の履歴と公開中の束の両方と照らし合わせる）。
+オペレータの一覧は、公開中より大きい `version` でしか差し替えられない。束に入る文は 256 個まで（ピアが他の
+コーディネータの分も持てるように）で、失効もこれに数える。
+
+運営者向け: 鍵は environment `coordinator`（`main` だけが使える）の secret と手元の控えにだけある。Guard は
+他人の PR に登録簿の 5 つのディレクトリの小さな通常ファイルだけ、1 PR 200 ファイルまでを許し、例外はない
+（`scripts/` や `.github/` の変更は管理者のバイパスでマージする。マージ後に鍵と一緒に動くことを忘れずに）。
+`main` の保護は GitHub Actions の `guard` と `validate` を最新のブランチで求める。公開中の束が見つからないときは
+エラーにする（最初の公開だけ `TRUST_BOOTSTRAP=1`）。

@@ -151,6 +151,56 @@ test("deleting a delegated operator or a revocation is refused; versions only gr
 test("the next version is larger than the published one", async () => {
   const { nextVersion } = await import("./trust.ts");
   assert.equal(nextVersion(null, 1000), 1000);
-  assert.equal(nextVersion({ version: 1000, delegated: new Set(), revoked: new Set() }, 1000), 1001);
-  assert.equal(nextVersion({ version: 5, delegated: new Set(), revoked: new Set() }, 1000), 1000);
+  assert.equal(nextVersion({ version: 1000, delegated: new Set(), revoked: new Set(), lists: new Map() }, 1000), 1001);
+  assert.equal(nextVersion({ version: 5, delegated: new Set(), revoked: new Set(), lists: new Map() }, 1000), 1000);
+});
+
+test("an operator list cannot go back to an older version or change without a new version", async () => {
+  const coord = key();
+  const op = key();
+  const { envelope } = await import("./trust.ts");
+  const list = (version: number, n: number) => envelope(op.priv, { type: "yacy-peerlist-v1", network: "*", version, peers: [{ pk: key().pk, priority: n, tags: [] }] });
+  const published = {
+    envelopes: [
+      envelope(coord.priv, { type: "yacy-delegation-v1", network: "*", operator: op.pk, version: 100, revoked: false }),
+      list(7, 50),
+    ],
+  };
+  const operator = { pk: op.pk, contact: "github:op", description: "x" };
+  for (const [l, message] of [
+    [list(6, 50), /older than the published version 7/],
+    [list(7, 60), /without raising its version 7/],
+  ] as const) {
+    const dir = registry({ "coordinator.json": { pk: coord.pk, bundle: "https://example.invalid/bundle.json" }, "published.json": published, "operators/op.json": operator, "lists/op.json": l });
+    const r = run(dir, ["validate"], { TRUST_PUBLISHED_FILE: join(dir, "published.json") });
+    assert.ok(!r.ok, r.out);
+    assert.match(r.out, message);
+  }
+  const dir = registry({ "coordinator.json": { pk: coord.pk, bundle: "https://example.invalid/bundle.json" }, "published.json": published, "operators/op.json": operator, "lists/op.json": list(8, 60) });
+  const r = run(dir, ["validate"], { TRUST_PUBLISHED_FILE: join(dir, "published.json") });
+  assert.ok(r.ok, r.out);
+});
+
+test("the git history keeps operators and revocations even without the published bundle", () => {
+  const coord = key();
+  const op = key();
+  const dir = registry({ "coordinator.json": { pk: coord.pk }, "operators/op.json": { pk: op.pk, contact: "github:op", description: "x" } });
+  const git = (...a: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", ...a], { stdio: "pipe" });
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-qm", "op");
+  git("rm", "-q", "operators/op.json");
+  git("commit", "-qm", "delete");
+  const r = run(dir, ["validate"]);
+  assert.ok(!r.ok, r.out);
+  assert.match(r.out, /was an operator; move its file to revoked/);
+});
+
+test("a registry too large for peers is refused before the merge", () => {
+  const coord = key();
+  const files: Record<string, unknown> = { "coordinator.json": { pk: coord.pk } };
+  for (let i = 0; i < 260; i++) files[`operators/op${i}.json`] = { pk: key().pk, contact: `github:op${i}`, description: "x" };
+  const r = run(registry(files), ["validate"]);
+  assert.ok(!r.ok);
+  assert.match(r.out, /envelopes; at most 256/);
 });

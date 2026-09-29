@@ -1,12 +1,12 @@
 name: Guard
 # Which files a pull request touches. pull_request_target runs this file from the base branch, so a pull request
-# cannot change the check; it never runs code from the pull request (it only reads the file list and git objects).
+# cannot change the check; it never runs code from the pull request (it only reads git objects).
+# There is no exemption: the owner merges other changes with the administrator bypass of the branch protection.
 on:
   pull_request_target:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   guard:
@@ -14,32 +14,30 @@ jobs:
     steps:
       - name: Only registry entries, as small regular files
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          OWNER: ${{ github.repository_owner }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REPO: ${{ github.event.pull_request.base.repo.clone_url }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
         run: |
           set -eu
-          if [ "$AUTHOR" = "$OWNER" ]; then echo "pull request by the owner: not restricted"; exit 0; fi
-          # every changed path, including the old name of a rename
-          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv' > files.tsv
-          cat files.tsv
+          git init -q objects && cd objects
+          git fetch -q "$BASE_REPO" "$BASE_SHA"
+          git fetch -q "$HEAD_REPO" "$HEAD_SHA"
+          # every path the merge would change, from git itself (the API lists at most 3000 files and may hide renames);
+          # --no-renames lists a move as a deletion and an addition, so both names are checked
+          git diff --no-renames --name-status -z "$BASE_SHA...$HEAD_SHA" | tr '\0' '\n' | paste - - > ../files.tsv
+          cat ../files.tsv
+          count=$(wc -l < ../files.tsv | tr -d ' ')
+          [ "$count" -le 200 ] || { echo "::error::$count files changed; at most 200 per pull request"; exit 1; }
+          [ "$count" -ge "$CHANGED" ] || { echo "::error::git lists $count changed files, GitHub $CHANGED"; exit 1; }
           allowed='^(peers|operators|lists|revoked|coordinators)/[a-z0-9][a-z0-9-]{1,39}\.json$'
           bad=0
-          while IFS="$(printf '\t')" read -r status name previous; do
-            for p in "$name" $previous; do
-              echo "$p" | grep -Eq "$allowed" || { echo "::error::$p is outside the registry directories"; bad=1; }
-            done
-          done < files.tsv
-          # file modes and sizes from the git objects (symlinks are mode 120000)
-          git init -q objects && cd objects
-          git fetch -q --depth=1 "$HEAD_REPO" "$HEAD_SHA"
-          while IFS="$(printf '\t')" read -r status name previous; do
-            [ "$status" = "removed" ] && continue
-            entry=$(git ls-tree -l FETCH_HEAD -- "$name")
+          while IFS="$(printf '\t')" read -r status name; do
+            printf '%s\n' "$name" | grep -Eq "$allowed" || { echo "::error::$name is outside the registry directories"; bad=1; continue; }
+            [ "$status" = "D" ] && continue
+            # file modes and sizes from the git objects (symlinks are mode 120000, submodules 160000)
+            entry=$(git ls-tree -l "$HEAD_SHA" -- "$name")
             mode=$(echo "$entry" | awk '{print $1}'); size=$(echo "$entry" | awk '{print $4}')
             [ "$mode" = "100644" ] || { echo "::error::$name must be a regular file (mode $mode)"; bad=1; }
             case "$name" in lists/*) max=1572864 ;; *) max=16384 ;; esac
