@@ -16,7 +16,7 @@ concurrency:
 
 env:
   # the YaCy fork image used to check the bundle, pinned by digest
-  YACY_IMAGE: ghcr.io/pad01g/yacy-improved-search@sha256:f149fef993a3eb37b3ac79cb5e3d56dfc65d17e869ebed0c36c4ff8d5e7dddbc
+  YACY_IMAGE: ghcr.io/pad01g/yacy-improved-search@sha256:027fb82b5d8dae0f1274e5d19595617ef33ae899e012ecb376d89fded598c1f9
 
 jobs:
   build:
