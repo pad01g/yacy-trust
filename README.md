@@ -4,7 +4,7 @@ The trust registry of the coordinator **`tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQ
 [YaCy improved-search fork](https://pad01g.github.io/yacy_search_server/). [日本語](#日本語)
 
 A merged pull request is the approval. After every merge, CI signs the bundle with the coordinator key and
-publishes it:
+publishes it (every bundle has a larger version than the one before):
 
 - Bundle for peers: https://pad01g.github.io/yacy-trust/bundle.json
 - Human-readable list: https://pad01g.github.io/yacy-trust/
@@ -30,8 +30,8 @@ delegates to). It fetches the bundle at start and every 10 minutes, and passes n
 | **Operator** | The coordinator delegates to your key. You sign your own list of trusted peers, with priorities and tags | pull request adding `operators/<name>.json`, then `lists/<name>.json` (or hand your list to peers yourself) |
 | **Coordinator** | The root of trust. Every user chooses coordinators themselves (`trust.coordinators`); nobody can make you one | run your own registry (fork this repository and generate your own key); pull request adding `coordinators/<name>.json` to be listed in the directory here |
 
-Rules for every entry: `contact` (e.g. `github:<user>`) and `description` are required, and you must control the
-private key of the `pk`. The maintainer merges what they are willing to vouch for. Tags declare what your results
+Rules for every entry: `contact` (e.g. `github:<user>`) and `description` are required, no other fields, and you
+must control the private key of the `pk`. Keys are the canonical 43-character base64url form that YaCy prints. The maintainer merges what they are willing to vouch for. Tags declare what your results
 contain: `ads`, `proxy:<engine>` (relays another search engine), `curated`, `unfiltered`, `adult`, or your own
 `x-<name>:...`. A peer with `ads` is still trusted, but users can drop it with `trust.policy.excludeTags=ads`.
 
@@ -56,33 +56,42 @@ contain: `ads`, `proxy:<engine>` (relays another search engine), `curated`, `unf
 
 ### Operator
 
-1. Make a key and keep it private:
+1. Make a key **outside any clone of this repository** and keep it private:
    ```sh
    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/k" -w /k --entrypoint sh ghcr.io/pad01g/yacy-improved-search:latest -c \
      "java -cp '/opt/yacy_search_server/lib/*' net.yacy.peers.trust.TrustTool keygen operator.key"
    ```
 2. Add `operators/<name>.json` with `pk`, `contact` and `description` (whose peers you will list and how you check them).
-3. After the merge, sign your list (`peers.json` is `[{"pk": "...", "priority": 100, "tags": []}]`). Use a larger version
-   every time, for example the current Unix time:
+3. After the merge, sign your list (`peers.json` is `[{"pk": "...", "priority": 100, "tags": []}]`, network `'*'` or
+   `freeworld`). Use a larger version every time: the current Unix time, never more than a day ahead (a version near
+   2^40 would block every later update of your list):
    ```sh
    docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/k" -w /k --entrypoint sh ghcr.io/pad01g/yacy-improved-search:latest -c \
      "java -cp '/opt/yacy_search_server/lib/*' net.yacy.peers.trust.TrustTool peerlist operator.key '*' $(date +%s) peers.json" > list.json
    ```
-4. Add it as `lists/<name>.json` in a pull request. CI checks that you signed it.
+4. Add it as `lists/<name>.json` in a pull request. CI checks that you signed it. Note that the delegation is the trust
+   decision: an operator can also hand its signed list to peers directly, so the review of `lists/` does not limit
+   whom an operator vouches for.
 
 ### Revocation
 
 A pull request that moves `operators/<name>.json` to `revoked/<name>.json` (with a `reason`) and deletes
 `lists/<name>.json`. The next bundle contains a revoked delegation with a newer version, so peers that still hold
-the old list stop using it. Removing `peers/<name>.json` removes a peer from the next list version.
+the old list stop using it. **Deleting an operator file is refused**: peers keep a delegation until a newer version
+revokes it, so an operator can only leave by moving to `revoked/`, and `revoked/` entries stay forever (CI compares
+with the published bundle). Removing `peers/<name>.json` removes a peer from the next version of the coordinator's
+own list; it does not remove the peer from operators' lists.
 
 ## For the maintainer
 
-- The coordinator key is only in the repository secret `COORDINATOR_KEY` and in an offline backup. It never
-  appears in the repository.
-- Pull requests from others may only touch `peers/`, `operators/`, `lists/`, `revoked/` and `coordinators/`
-  (checked by `Validate`). Changes to `scripts/` or `.github/` run with the key after a merge: review them yourself.
-- Versions are the commit time of `main`, so every merge produces newer versions.
+- The coordinator key is only in the secret `COORDINATOR_KEY` of the environment `coordinator`, which only the `main`
+  branch may use, and in an offline backup. Anyone who can push to `main` (or change workflows there) can use the key:
+  keep the list of people with write access short.
+- `Guard` (run from the base branch, so a pull request cannot change it) lets pull requests from others touch only
+  `peers/`, `operators/`, `lists/`, `revoked/` and `coordinators/` entries, as regular files of limited size. Your own
+  pull requests and changes to `scripts/` or `.github/` are not restricted: they run with the key after a merge.
+- `Publish` refuses to run for anything but the current head of `main` (a re-run of an old run would publish old
+  state), sets the version to max(now, published version + 1), and fails unless YaCy accepts every statement.
 - Test locally: `node --test scripts/trust.test.ts && node scripts/trust.ts validate`.
 
 ---

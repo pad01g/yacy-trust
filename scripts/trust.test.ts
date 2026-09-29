@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -77,4 +77,80 @@ test("a wrong coordinator key is refused", () => {
   const r = run(dir, ["build", join(dir, "site")], { COORDINATOR_KEY: key().pem });
   assert.ok(!r.ok);
   assert.match(r.out, /does not belong/);
+});
+
+/** the same 32 bytes spelled with different unused bits in the last character */
+function alias(pk: string): string {
+  const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".indexOf(pk[42]);
+  return pk.slice(0, 42) + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[last ^ 1];
+}
+
+test("a second spelling of a revoked key is refused", async () => {
+  const coord = key();
+  const bad = key();
+  const { envelope } = await import("./trust.ts");
+  const list = envelope(bad.priv, { type: "yacy-peerlist-v1", network: "*", version: 5, peers: [] });
+  const dir = registry({
+    "coordinator.json": { pk: coord.pk },
+    "revoked/badguy.json": { pk: bad.pk, contact: "x", description: "x", reason: "abuse" },
+    "operators/newguy.json": { pk: alias(bad.pk), contact: "x", description: "x" },
+    "lists/newguy.json": { ...list, signer: alias(bad.pk) },
+  });
+  const r = run(dir, ["validate"]);
+  assert.ok(!r.ok);
+  assert.match(r.out, /operators\/newguy.json: pk must be/);
+});
+
+test("symlinks, oversized files, unknown fields, far versions, other networks and spoofing text are refused", async () => {
+  const coord = key();
+  const op = key();
+  const { envelope } = await import("./trust.ts");
+  const future = envelope(op.priv, { type: "yacy-peerlist-v1", network: "lab", version: 2 ** 40, peers: [], pad: "x" });
+  const dir = registry({
+    "coordinator.json": { pk: coord.pk },
+    "operators/op.json": { pk: op.pk, contact: "x", description: "x" },
+    "lists/op.json": future,
+    "peers/big.json": { pk: key().pk, contact: "x", description: "x".repeat(20000) },
+    "peers/extra.json": { pk: key().pk, contact: "x", description: "x", admin: true },
+    "peers/rtl.json": { pk: key().pk, contact: "github:\u202eevil", description: "x" },
+  });
+  symlinkSync("/etc/hostname", join(dir, "peers/link.json"));
+  const r = run(dir, ["validate"]);
+  assert.ok(!r.ok);
+  for (const expected of ["peers/link.json: must be a regular file", "peers/big.json: is \\d+ bytes", 'unknown field "admin"', 'unknown field "pad"', "version must be 1\\.\\.", "network must be one of", "peers/rtl.json: contact is required"])
+    assert.match(r.out, new RegExp(expected), expected);
+});
+
+test("deleting a delegated operator or a revocation is refused; versions only grow", async () => {
+  const coord = key();
+  const op = key();
+  const gone = key();
+  const { envelope } = await import("./trust.ts");
+  const published = {
+    envelopes: [
+      envelope(coord.priv, { type: "yacy-peerlist-v1", network: "*", version: 5000000000, peers: [] }),
+      envelope(coord.priv, { type: "yacy-delegation-v1", network: "*", operator: op.pk, version: 5000000000, revoked: false }),
+      envelope(coord.priv, { type: "yacy-delegation-v1", network: "*", operator: gone.pk, version: 5000000000, revoked: true }),
+    ],
+  };
+  const dir = registry({ "coordinator.json": { pk: coord.pk, bundle: "https://example.invalid/bundle.json" }, "published.json": published });
+  const env = { TRUST_PUBLISHED_FILE: join(dir, "published.json") };
+  const r = run(dir, ["validate"], env);
+  assert.ok(!r.ok);
+  assert.match(r.out, /move its file to revoked/);
+  assert.match(r.out, /revoked\/ entries must stay/);
+  // a published version far in the future is not followed
+  mkdirSync(join(dir, "revoked"), { recursive: true });
+  writeFileSync(join(dir, "revoked/op.json"), JSON.stringify({ pk: op.pk, contact: "x", description: "x", reason: "left" }));
+  writeFileSync(join(dir, "revoked/gone.json"), JSON.stringify({ pk: gone.pk, contact: "x", description: "x", reason: "left" }));
+  const b = run(dir, ["build", join(dir, "site")], { ...env, COORDINATOR_KEY: coord.pem });
+  assert.ok(!b.ok);
+  assert.match(b.out, /more than a day in the future/);
+});
+
+test("the next version is larger than the published one", async () => {
+  const { nextVersion } = await import("./trust.ts");
+  assert.equal(nextVersion(null, 1000), 1000);
+  assert.equal(nextVersion({ version: 1000, delegated: new Set(), revoked: new Set() }, 1000), 1001);
+  assert.equal(nextVersion({ version: 5, delegated: new Set(), revoked: new Set() }, 1000), 1000);
 });

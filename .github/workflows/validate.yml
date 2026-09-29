@@ -1,5 +1,5 @@
 name: Validate
-# Pull requests: check the registry files. No secrets are available here.
+# Pull requests: check the registry entries against the rules and against the published bundle. No secrets here.
 on:
   pull_request:
 
@@ -10,22 +10,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
-      # The signing key is used by scripts/ and .github/ after a merge. A pull request from somebody else may only add or
-      # change registry entries, so that a merge cannot smuggle in code that reads the key.
-      - name: Only registry files change
-        if: github.event.pull_request.user.login != github.repository_owner
-        run: |
-          git diff --name-only "origin/${{ github.base_ref }}...HEAD" > changed.txt
-          cat changed.txt
-          if grep -vE '^(peers|operators|lists|revoked|coordinators)/[a-z0-9-]+\.json$' changed.txt; then
-            echo "::error::Pull requests may only change peers/, operators/, lists/, revoked/ and coordinators/ (<name>.json). Open an issue for other changes."
-            exit 1
-          fi
       - run: node --no-warnings --test scripts/trust.test.ts
       - run: node --no-warnings scripts/trust.ts validate

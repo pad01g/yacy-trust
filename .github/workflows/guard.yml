@@ -1,0 +1,48 @@
+name: Guard
+# Which files a pull request touches. pull_request_target runs this file from the base branch, so a pull request
+# cannot change the check; it never runs code from the pull request (it only reads the file list and git objects).
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only registry entries, as small regular files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          OWNER: ${{ github.repository_owner }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+        run: |
+          set -eu
+          if [ "$AUTHOR" = "$OWNER" ]; then echo "pull request by the owner: not restricted"; exit 0; fi
+          # every changed path, including the old name of a rename
+          gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv' > files.tsv
+          cat files.tsv
+          allowed='^(peers|operators|lists|revoked|coordinators)/[a-z0-9][a-z0-9-]{1,39}\.json$'
+          bad=0
+          while IFS="$(printf '\t')" read -r status name previous; do
+            for p in "$name" $previous; do
+              echo "$p" | grep -Eq "$allowed" || { echo "::error::$p is outside the registry directories"; bad=1; }
+            done
+          done < files.tsv
+          # file modes and sizes from the git objects (symlinks are mode 120000)
+          git init -q objects && cd objects
+          git fetch -q --depth=1 "$HEAD_REPO" "$HEAD_SHA"
+          while IFS="$(printf '\t')" read -r status name previous; do
+            [ "$status" = "removed" ] && continue
+            entry=$(git ls-tree -l FETCH_HEAD -- "$name")
+            mode=$(echo "$entry" | awk '{print $1}'); size=$(echo "$entry" | awk '{print $4}')
+            [ "$mode" = "100644" ] || { echo "::error::$name must be a regular file (mode $mode)"; bad=1; }
+            case "$name" in lists/*) max=1572864 ;; *) max=16384 ;; esac
+            [ "$size" -le "$max" ] 2>/dev/null || { echo "::error::$name is $size bytes (at most $max)"; bad=1; }
+          done < ../files.tsv
+          [ $bad = 0 ] || { echo "::error::Pull requests may only add, change or move peers/, operators/, lists/, revoked/ and coordinators/ entries. Open an issue for other changes."; exit 1; }
