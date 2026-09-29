@@ -3,6 +3,10 @@
 The trust registry of the coordinator **`tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc`** for peers of the
 [YaCy improved-search fork](https://pad01g.github.io/yacy_search_server/). [日本語](#日本語)
 
+**Pull requests welcome** — from people and from agents. You can also skip this registry entirely and run your own
+coordinator: fork this repository and generate your own key (no server needed). How to join, in 8 languages:
+[English](https://pad01g.github.io/yacy_search_server/join.html) · [日本語](https://pad01g.github.io/yacy_search_server/ja/join.html) · [简体中文](https://pad01g.github.io/yacy_search_server/zh/join.html) · [Español](https://pad01g.github.io/yacy_search_server/es/join.html) · [Português](https://pad01g.github.io/yacy_search_server/pt/join.html) · [한국어](https://pad01g.github.io/yacy_search_server/ko/join.html) · [Deutsch](https://pad01g.github.io/yacy_search_server/de/join.html) · [Français](https://pad01g.github.io/yacy_search_server/fr/join.html).
+
 A merged pull request is the approval. After every merge, CI signs the bundle with the coordinator key and
 publishes it (every bundle has a larger version than the one before):
 
@@ -105,6 +109,7 @@ own list; it does not remove the peer from operators' lists.
 
 YaCy improved-search フォーク（[説明](https://pad01g.github.io/yacy_search_server/ja/)）のピア向けの、
 コーディネータ `tQyLZkWjlTupmUCxU7WcXfYG9eDjfmJbOWzMOWQcVEc` の信頼の登録簿。**pull request がマージされたことが承認になる。**
+**PR 歓迎**（人からもエージェントからも）。この登録簿を使わず、fork して自分の鍵で自分のコーディネータになることもできる（サーバー不要）。
 マージのたびに CI がコーディネータの鍵で束に署名して公開する（束の版は毎回前より大きい）:
 
 - ピア向けの束: https://pad01g.github.io/yacy-trust/bundle.json
